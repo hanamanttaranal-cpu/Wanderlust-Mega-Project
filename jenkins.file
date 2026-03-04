@@ -1,0 +1,75 @@
+pipeline {
+    agent any
+
+    tools {
+        nodejs 'node'
+    }
+
+    environment {
+        SONAR_HOME = tool "Sonar"
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                git url: "https://github.com/hanamanttaranal-cpu/Wanderlust-Mega-Project.git", branch: "main"
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                // 'npm ci' is the production standard (faster and more reliable than 'install')
+                sh "npm ci"
+            }
+        }
+        
+        stage('Static Analysis') {
+            steps {
+                withSonarQubeEnv('Sonar') {
+                    sh """
+                        $SONAR_HOME/bin/sonar-scanner \
+                        -Dsonar.projectName=wanderlust-ci-cd \
+                        -Dsonar.projectKey=wanderlust-ci-cd \
+                        -Dsonar.sources=. \
+                        -Dsonar.java.binaries=target
+                    """
+                }
+            }
+        }
+
+        stage('OWASP Dependency Check') {
+            steps {
+                withCredentials([string(credentialsId: 'nvd-api-key', variable: 'NVD_API_KEY')]) {
+                    dependencyCheck(
+                        additionalArguments: "--scan ./ --format HTML --nvdApiKey ${NVD_API_KEY}", 
+                        odcInstallation: 'dc'
+                    )
+                }
+                dependencyCheckPublisher pattern: '**/dependency-check-report.html'
+            }
+        }
+
+        stage('Sonar Quality Gate') {
+            steps {
+                timeout(time: 5, unit: "MINUTES") {
+                    // Set to false: We want to see the Trivy results even if Sonar has 'Warnings'
+                    waitForQualityGate abortPipeline: false 
+                }
+            }
+        }
+
+        stage('Trivy Security Scan') {
+            steps {
+                // PRODUCTION RULE: If a CRITICAL vulnerability is found, FAIL THE BUILD (--exit-code 1)
+                sh "trivy fs --exit-code 1 --severity CRITICAL --format table ."
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                sh "docker-compose up -d"
+                // Your deployment commands (Docker/K8s) go here
+            }
+        }
+    }
+}
